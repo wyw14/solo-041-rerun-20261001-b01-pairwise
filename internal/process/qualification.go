@@ -36,32 +36,65 @@ func (p *Plant) ApplyLabResult(ctx context.Context, result model.LabResult, now 
 	if !result.Valid || result.BatchID == uuid.Nil {
 		return QualificationOutcome{}, errors.New("invalid lab result cannot qualify a batch")
 	}
+
+	// The whole qualification is one transaction: all identity relationships
+	// between sample, line, batch and permit are verified before any state is
+	// touched, and the valve/permit are actuated before the batch is committed.
+	// A rejected result therefore leaves every line's batches, permits and
+	// valves exactly as they were.
 	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	batch, exists := p.batches[result.BatchID]
 	if !exists {
-		p.mu.Unlock()
 		return QualificationOutcome{}, errors.New("lab result batch is not found")
 	}
+	line, lineExists := p.lines[batch.LineID]
+	if !lineExists {
+		return QualificationOutcome{}, errors.New("batch process line is not found")
+	}
+	if result.LineID != batch.LineID || result.LineID != line.ID {
+		return QualificationOutcome{}, errors.New("lab result does not belong to batch line")
+	}
+	sample, sampleRegistered := p.sampler.Sample(result.SampleID)
+	if !sampleRegistered {
+		return QualificationOutcome{}, errors.New("lab result sample is not registered")
+	}
+	if sample.LineID != result.LineID {
+		return QualificationOutcome{}, errors.New("lab result does not belong to sample line")
+	}
+
+	// Pure computation: ApplyQualification returns either the next batch
+	// state or an error without mutating the stored batch.
 	updated, err := batch.ApplyQualification(result, now)
 	if err != nil {
-		p.mu.Unlock()
 		return QualificationOutcome{}, err
 	}
+
+	// Record the result first so a stale revision is rejected before the
+	// batch or any valve moves. It is rolled back if a later step fails.
+	notice, err := p.labResults.Apply(result)
+	if err != nil {
+		return QualificationOutcome{}, err
+	}
+
+	// Actuate the permit/valve while nothing is committed yet. An unqualified
+	// result that merely leaves the valve closed is the single benign outcome
+	// recorded without a permit; every other error aborts the transaction.
+	permit, permitErr := p.permits.ApplyResult(result, now)
+	if permitErr != nil && (result.Qualified() || !errors.Is(permitErr, discharge.ErrNotQualified)) {
+		p.labResults.Revert(notice)
+		return QualificationOutcome{}, permitErr
+	}
+
 	p.batches[result.BatchID] = updated
-	line := p.lines[updated.LineID]
 	line.Stage = updated.Stage
 	line.UpdatedAt = now.UTC()
 	p.lines[updated.LineID] = line
-	p.mu.Unlock()
-	if _, err := p.labResults.Apply(result); err != nil {
-		return QualificationOutcome{}, err
-	}
-	permit, permitErr := p.permits.ApplyResult(result, now)
+
 	outcome := QualificationOutcome{Batch: updated}
 	if permitErr == nil {
 		outcome.Permit = &permit
-	} else if result.Qualified() {
-		return QualificationOutcome{}, permitErr
 	}
 	return outcome, nil
 }

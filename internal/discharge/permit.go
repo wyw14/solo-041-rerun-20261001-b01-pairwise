@@ -27,6 +27,10 @@ type PermitBook struct {
 	valves  *ValveController
 }
 
+// ErrNotQualified signals that a valid result does not (yet) qualify a batch
+// for discharge and no active permit had to be revoked.
+var ErrNotQualified = errors.New("result is not qualified for discharge")
+
 func NewPermitBook(valves *ValveController) (*PermitBook, error) {
 	if valves == nil {
 		return nil, errors.New("permit book requires valve controller")
@@ -38,30 +42,41 @@ func (b *PermitBook) ApplyResult(result model.LabResult, now time.Time) (Permit,
 	if !result.Valid || result.SampleID == uuid.Nil || result.BatchID == uuid.Nil || result.Revision == 0 {
 		return Permit{}, errors.New("permit result is invalid")
 	}
+	if result.LineID == "" {
+		return Permit{}, errors.New("permit result line is missing")
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	current, exists := b.byBatch[result.BatchID]
+	if exists && current.LineID != result.LineID {
+		return Permit{}, errors.New("permit result does not belong to batch line")
+	}
 	if exists && current.SampleID == result.SampleID && result.Revision <= current.SampleRevision {
 		return current, errors.New("permit result revision is stale")
 	}
 	if !result.Qualified() {
 		if exists && current.Active {
+			revoked := current
 			stamp := now.UTC()
-			current.Active = false
-			current.SampleRevision = result.Revision
-			current.RevokedAt = &stamp
-			b.byBatch[result.BatchID] = current
+			revoked.Active = false
+			revoked.SampleRevision = result.Revision
+			revoked.RevokedAt = &stamp
+			// Actuate the valve before recording the revoked permit so a
+			// failure leaves both the book and the valve unchanged.
 			if err := b.valves.Hold(result.LineID, now); err != nil {
 				return Permit{}, err
 			}
-			return current, nil
+			b.byBatch[result.BatchID] = revoked
+			return revoked, nil
 		}
-		return Permit{}, errors.New("result is not qualified for discharge")
+		return Permit{}, ErrNotQualified
 	}
 	permit := Permit{
 		ID: uuid.New(), LineID: result.LineID, BatchID: result.BatchID,
 		SampleID: result.SampleID, SampleRevision: result.Revision, Active: true, IssuedAt: now.UTC(),
 	}
+	// Open the valve before issuing the permit; a rejected target must not
+	// leave a recorded permit for a valve that never moved.
 	if err := b.valves.Open(result.LineID, permit.ID, now); err != nil {
 		return Permit{}, err
 	}

@@ -39,6 +39,19 @@ func (r *Results) Apply(result model.LabResult) (RevisionNotice, error) {
 	return notice, nil
 }
 
+// Revert restores the state recorded by a prior Apply call when a later step
+// of the same qualification transaction is rejected. notice must be the value
+// returned by that Apply call.
+func (r *Results) Revert(notice RevisionNotice) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if notice.Revised {
+		r.bySample[notice.Current.SampleID] = notice.Previous
+	} else {
+		delete(r.bySample, notice.Current.SampleID)
+	}
+}
+
 func (r *Results) Get(sampleID uuid.UUID) (model.LabResult, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
