@@ -48,6 +48,9 @@ func (p *Plant) ReceiveSample(ctx context.Context, sample model.Sample) error {
 	if err := p.receiver.Receive(ctx, sample, p.now()); err != nil {
 		return err
 	}
+	if err := p.sampleRegistry.Bind(sample); err != nil {
+		return err
+	}
 	return p.sampler.Publish(sample)
 }
 

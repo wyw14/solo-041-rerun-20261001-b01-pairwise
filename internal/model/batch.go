@@ -45,6 +45,12 @@ func (b Batch) ApplyQualification(result LabResult, now time.Time) (Batch, error
 	if result.SampleID == uuid.Nil || result.Revision == 0 {
 		return b, errors.New("lab result identity is incomplete")
 	}
+	if result.BatchID != b.ID {
+		return b, errors.New("lab result batch does not match batch")
+	}
+	if result.LineID != b.LineID {
+		return b, errors.New("lab result line does not match batch line")
+	}
 	if b.QualificationSample == result.SampleID && result.Revision <= b.QualificationRev {
 		return b, errors.New("lab result revision is stale")
 	}

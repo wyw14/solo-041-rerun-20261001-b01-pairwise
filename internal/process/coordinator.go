@@ -24,32 +24,33 @@ import (
 )
 
 type Plant struct {
-	mu            sync.RWMutex
-	now           func() time.Time
-	lines         map[model.LineID]model.LineState
-	batches       map[uuid.UUID]model.Batch
-	lineBatches   map[model.LineID]uuid.UUID
-	store         *journal.FileStore
-	snapshots     *journal.SnapshotStore
-	intake        *intake.Controller
-	equalizers    *intake.EqualizationPool
-	aeration      *aeration.Controller
-	dosing        *dosing.Service
-	labResults    *lab.Results
-	permits       *discharge.PermitBook
-	valves        *discharge.ValveController
-	alarms        *alarm.Service
-	settling      map[model.LineID]*settling.State
-	cycles        *settling.CycleBook
-	interlocks    *interlock.Arbiter
-	drains        *sludge.DrainService
-	pumps         *sludge.PumpController
-	handovers     *sludge.HandoverBook
-	sequences     *sludge.SequenceBook
-	compensations *journal.CompensationQueue
-	devices       *DeviceBus
-	sampler       *sensor.Sampler
-	receiver      *sensor.Receiver
+	mu             sync.RWMutex
+	now            func() time.Time
+	lines          map[model.LineID]model.LineState
+	batches        map[uuid.UUID]model.Batch
+	lineBatches    map[model.LineID]uuid.UUID
+	store          *journal.FileStore
+	snapshots      *journal.SnapshotStore
+	intake         *intake.Controller
+	equalizers     *intake.EqualizationPool
+	aeration       *aeration.Controller
+	dosing         *dosing.Service
+	sampleRegistry *lab.Registry
+	labResults     *lab.Results
+	permits        *discharge.PermitBook
+	valves         *discharge.ValveController
+	alarms         *alarm.Service
+	settling       map[model.LineID]*settling.State
+	cycles         *settling.CycleBook
+	interlocks     *interlock.Arbiter
+	drains         *sludge.DrainService
+	pumps          *sludge.PumpController
+	handovers      *sludge.HandoverBook
+	sequences      *sludge.SequenceBook
+	compensations  *journal.CompensationQueue
+	devices        *DeviceBus
+	sampler        *sensor.Sampler
+	receiver       *sensor.Receiver
 }
 
 func NewPlant(dataDir string, lines []model.LineID, now func() time.Time) (*Plant, error) {
@@ -144,7 +145,7 @@ func NewPlant(dataDir string, lines []model.LineID, now func() time.Time) (*Plan
 		now: now, lines: make(map[model.LineID]model.LineState), batches: make(map[uuid.UUID]model.Batch),
 		lineBatches: make(map[model.LineID]uuid.UUID), store: store, snapshots: snapshots,
 		intake: intakeController, equalizers: pool, aeration: aerationController, dosing: dosingService,
-		labResults: lab.NewResults(), permits: permits, valves: valves, alarms: alarm.NewService(),
+		sampleRegistry: lab.NewRegistry(), labResults: lab.NewResults(), permits: permits, valves: valves, alarms: alarm.NewService(),
 		settling: make(map[model.LineID]*settling.State), cycles: settling.NewCycleBook(),
 		interlocks: arbiter, drains: drains, pumps: pumps, handovers: sludge.NewHandoverBook(),
 		sequences: sequences, compensations: queue, devices: devices, sampler: sampler, receiver: receiver,

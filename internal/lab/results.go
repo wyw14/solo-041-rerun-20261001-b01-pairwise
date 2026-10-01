@@ -45,3 +45,15 @@ func (r *Results) Get(sampleID uuid.UUID) (model.LabResult, bool) {
 	result, ok := r.bySample[sampleID]
 	return result, ok
 }
+
+// Rollback reverses an Apply described by notice, restoring the previous
+// entry (or removing a newly inserted one).
+func (r *Results) Rollback(notice RevisionNotice) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if notice.Revised {
+		r.bySample[notice.Current.SampleID] = notice.Previous
+	} else {
+		delete(r.bySample, notice.Current.SampleID)
+	}
+}

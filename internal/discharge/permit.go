@@ -10,6 +10,11 @@ import (
 	"github.com/wyw14/cry-97/internal/model"
 )
 
+// ErrNotQualified reports that a valid result does not qualify for discharge
+// and that no previously active permit needed to be revoked. It is not a
+// reason to reject the result for the batch.
+var ErrNotQualified = errors.New("result is not qualified for discharge")
+
 type Permit struct {
 	ID             uuid.UUID    `json:"id"`
 	LineID         model.LineID `json:"line_id"`
@@ -34,29 +39,54 @@ func NewPermitBook(valves *ValveController) (*PermitBook, error) {
 	return &PermitBook{byBatch: make(map[uuid.UUID]Permit), valves: valves}, nil
 }
 
-func (b *PermitBook) ApplyResult(result model.LabResult, now time.Time) (Permit, error) {
+// Check validates a result without changing any permit or valve state.
+func (b *PermitBook) Check(result model.LabResult) error {
 	if !result.Valid || result.SampleID == uuid.Nil || result.BatchID == uuid.Nil || result.Revision == 0 {
-		return Permit{}, errors.New("permit result is invalid")
+		return errors.New("permit result is invalid")
+	}
+	if result.LineID == "" {
+		return errors.New("permit result line is missing")
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	current, exists := b.byBatch[result.BatchID]
+	if exists && current.LineID != result.LineID {
+		return errors.New("permit result line does not match permit line")
+	}
+	if exists && current.SampleID == result.SampleID && result.Revision <= current.SampleRevision {
+		return errors.New("permit result revision is stale")
+	}
+	return nil
+}
+
+// ApplyResult updates the permit for the result's batch and drives that
+// batch's line valve. A batch's permit is always bound to the batch's own
+// line; callers must have verified result.LineID against the batch. Permit
+// book state is restored if the valve cannot be driven, so a failure never
+// leaves permit and valve disagreeing.
+func (b *PermitBook) ApplyResult(result model.LabResult, now time.Time) (Permit, error) {
+	if err := b.Check(result); err != nil {
+		return Permit{}, err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	current, exists := b.byBatch[result.BatchID]
-	if exists && current.SampleID == result.SampleID && result.Revision <= current.SampleRevision {
-		return current, errors.New("permit result revision is stale")
-	}
 	if !result.Qualified() {
 		if exists && current.Active {
+			previous := current
 			stamp := now.UTC()
 			current.Active = false
+			current.SampleID = result.SampleID
 			current.SampleRevision = result.Revision
 			current.RevokedAt = &stamp
 			b.byBatch[result.BatchID] = current
 			if err := b.valves.Hold(result.LineID, now); err != nil {
+				b.byBatch[result.BatchID] = previous
 				return Permit{}, err
 			}
 			return current, nil
 		}
-		return Permit{}, errors.New("result is not qualified for discharge")
+		return Permit{}, ErrNotQualified
 	}
 	permit := Permit{
 		ID: uuid.New(), LineID: result.LineID, BatchID: result.BatchID,
